@@ -12,6 +12,7 @@ param environmentName string
   'eastasia'
   'eastus'
   'eastus2'
+  'northcentralus'
   'northeurope'
   'southcentralus'
   'southeastasia'
@@ -75,6 +76,12 @@ param disableLocalAuth bool = true
 
 param openAiServiceName string = ''
 
+param dtsName string = ''
+param taskHubName string = ''
+param dtsLocation string = location
+param dtsSkuName string = 'Consumption'
+param dtsCapacity int = 1
+
 param openAiSkuName string
 @allowed(['azure', 'openai', 'azure_custom'])
 param openAiHost string // Set in main.parameters.json
@@ -104,6 +111,8 @@ var functionAppName = !empty(durableFunctionServiceName)
   ? durableFunctionServiceName
   : '${abbrs.webSitesFunctions}${resourceToken}'
 var deploymentStorageContainerName = 'app-package-${take(functionAppName, 32)}-${take(toLower(uniqueString(functionAppName, resourceToken)), 7)}'
+var dtsResourceName = !empty(dtsName) ? dtsName : '${abbrs.durableTaskSchedulers}${resourceToken}'
+var taskHubResourceName = !empty(taskHubName) ? taskHubName : '${abbrs.durableTaskHubs}${resourceToken}'
 
 @description('Id of the user or app to assign application roles')
 param principalId string = ''
@@ -161,6 +170,8 @@ module durableFunction './app/durable-function.bicep' = {
     azureOpenaiChatgptDeployment: chatGptDeploymentName
     azureOpenaiService: openAi.outputs.name
     documentIntelligenceEndpoint: documentIntelligence.outputs.endpoint
+    dtsURL: dts.outputs.dts_URL
+    taskHubName: dts.outputs.TASKHUB_NAME
     appSettings: {}
     virtualNetworkSubnetId: serviceVirtualNetwork.outputs.appSubnetID
   }
@@ -194,53 +205,15 @@ module storage './core/storage/storage-account.bicep' = {
 }
 
 var storageBlobRoleDefinitionId = 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b' //Storage Blob Data Owner role
-var storageQueueRoleDefinitionId = '974c5e8b-45b9-4653-ba55-5f855dd0fb88' //Storage Queue Data Owner role
-var storageTableRoleDefinitionId = '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3' //Storage Table Data Owner role
-var storageAccountRoleDefinitionId = '17d1049b-9a84-46fb-8f53-869881c3d3ab' //Storage Account Data Owner role
 
-// Allow access from durable function to storage account using a user assigned managed identity
+// Allow access from durable function to storage account (blob only) using a user assigned managed identity.
+// Queue/Table/Account roles are intentionally NOT assigned: Durable Task Scheduler replaces queues/tables.
 module storageBlobRoleAssignmentApiUAMI 'app/storage-Access.bicep' = {
   name: 'storageBlobRoleAssignmentPocessorUAMI'
   scope: rg
   params: {
     storageAccountName: storage.outputs.name
     roleDefinitionID: storageBlobRoleDefinitionId
-    principalID: durableFunctionUserAssignedIdentity.outputs.identityPrincipalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-// Allow access from durable function to storage account using a user assigned managed identity
-module storageQueueRoleAssignmentApiUAMI 'app/storage-Access.bicep' = {
-  name: 'storageQueueRoleAssignmentPocessorUAMI'
-  scope: rg
-  params: {
-    storageAccountName: storage.outputs.name
-    roleDefinitionID: storageQueueRoleDefinitionId
-    principalID: durableFunctionUserAssignedIdentity.outputs.identityPrincipalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-// Allow access from durable function to storage account using a user assigned managed identity
-module storageTableRoleAssignmentApiUAMI 'app/storage-Access.bicep' = {
-  name: 'storageTableRoleAssignmentPocessorUAMI'
-  scope: rg
-  params: {
-    storageAccountName: storage.outputs.name
-    roleDefinitionID: storageTableRoleDefinitionId
-    principalID: durableFunctionUserAssignedIdentity.outputs.identityPrincipalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-// Allow access from durable function to storage account using a user assigned managed identity
-module storageAccountRoleAssignmentApiUAMI 'app/storage-Access.bicep' = {
-  name: 'storageAccountRoleAssignmentPocessorUAMI'
-  scope: rg
-  params: {
-    storageAccountName: storage.outputs.name
-    roleDefinitionID: storageAccountRoleDefinitionId
     principalID: durableFunctionUserAssignedIdentity.outputs.identityPrincipalId
     principalType: 'ServicePrincipal'
   }
@@ -381,6 +354,49 @@ module documentIntelligenceRoleBackend 'app/documentintelligence-Access.bicep' =
     principalId: durableFunctionUserAssignedIdentity.outputs.identityPrincipalId
     roleDefinitionId: 'a97b65f3-24c7-4388-baec-2e87135dc908'
     principalType: 'ServicePrincipal'
+  }
+}
+
+// Durable Task Scheduler (DTS) — replaces the Azure Storage backend for Durable Functions.
+module dts './app/dts.bicep' = {
+  scope: rg
+  name: 'dtsResource'
+  params: {
+    name: dtsResourceName
+    taskhubname: taskHubResourceName
+    location: dtsLocation
+    tags: tags
+    ipAllowlist: [
+      '0.0.0.0/0'
+    ]
+    skuName: dtsSkuName
+    skuCapacity: dtsCapacity
+  }
+}
+
+// Durable Task Data Contributor role — grants the function app UAMI access to the DTS task hub.
+var dtsRoleDefinitionId = '0ad04412-c4d5-4796-b79c-f76d14c8d402'
+
+module dtsRoleAssignment 'app/dts-Access.bicep' = {
+  name: 'dtsRoleAssignment'
+  scope: rg
+  params: {
+    roleDefinitionID: dtsRoleDefinitionId
+    principalID: durableFunctionUserAssignedIdentity.outputs.identityPrincipalId
+    principalType: 'ServicePrincipal'
+    dtsName: dts.outputs.dts_NAME
+  }
+}
+
+// Allow the deployer identity to view runs in the DTS dashboard.
+module dtsDashboardRoleAssignment 'app/dts-Access.bicep' = if (!empty(principalId)) {
+  name: 'dtsDashboardRoleAssignment'
+  scope: rg
+  params: {
+    roleDefinitionID: dtsRoleDefinitionId
+    principalID: principalId
+    principalType: 'User'
+    dtsName: dts.outputs.dts_NAME
   }
 }
 

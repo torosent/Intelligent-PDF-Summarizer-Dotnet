@@ -10,12 +10,17 @@
       "logLevel": {
         "Host.Triggers.DurableTask": "Information"
       }
+    },
+    "logLevel": {
+      "DurableTask.AzureManagedBackend": "Information"
     }
   },
   "extensions": {
     "durableTask": {
+      "hubName": "%TASKHUB_NAME%",
       "storageProvider": {
-        "type": "azureStorage"
+        "type": "azureManaged",
+        "connectionStringName": "DURABLE_TASK_SCHEDULER_CONNECTION_STRING"
       }
     }
   }

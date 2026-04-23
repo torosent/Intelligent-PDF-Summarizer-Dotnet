@@ -60,6 +60,8 @@
     "logicWorkflows": "logic-",
     "machineLearningServicesWorkspaces": "mlw-",
     "managedIdentityUserAssignedIdentities": "id-",
+    "durableTaskSchedulers": "dts-",
+    "durableTaskHubs": "th-",
     "managementManagementGroups": "mg-",
     "migrateAssessmentProjects": "migr-",
     "networkApplicationGateways": "agw-",
